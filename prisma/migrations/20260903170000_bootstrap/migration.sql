@@ -1,0 +1,15 @@
+CREATE TABLE "Tenant" ("id" TEXT NOT NULL,"name" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"updatedAt" TIMESTAMP(3) NOT NULL,CONSTRAINT "Tenant_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "User" ("id" TEXT NOT NULL,"email" TEXT NOT NULL,"name" TEXT,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"updatedAt" TIMESTAMP(3) NOT NULL,CONSTRAINT "User_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "Membership" ("id" TEXT NOT NULL,"tenantId" TEXT NOT NULL,"userId" TEXT NOT NULL,"role" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "Membership_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "AuditEvent" ("id" TEXT NOT NULL,"tenantId" TEXT,"event" TEXT NOT NULL,"actorId" TEXT,"metadata" JSONB,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "AuditEvent_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "OutboxEvent" ("id" TEXT NOT NULL,"tenantId" TEXT,"type" TEXT NOT NULL,"aggregateId" TEXT,"payload" JSONB NOT NULL,"occurredAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"processedAt" TIMESTAMP(3),"attempts" INTEGER NOT NULL DEFAULT 0,CONSTRAINT "OutboxEvent_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+CREATE UNIQUE INDEX "Membership_tenantId_userId_key" ON "Membership"("tenantId","userId");
+CREATE INDEX "Membership_tenantId_idx" ON "Membership"("tenantId");
+CREATE INDEX "AuditEvent_tenantId_createdAt_idx" ON "AuditEvent"("tenantId","createdAt");
+CREATE INDEX "OutboxEvent_processedAt_occurredAt_idx" ON "OutboxEvent"("processedAt","occurredAt");
+CREATE INDEX "OutboxEvent_tenantId_occurredAt_idx" ON "OutboxEvent"("tenantId","occurredAt");
+ALTER TABLE "Membership" ADD CONSTRAINT "Membership_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "Membership" ADD CONSTRAINT "Membership_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "AuditEvent" ADD CONSTRAINT "AuditEvent_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "OutboxEvent" ADD CONSTRAINT "OutboxEvent_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
