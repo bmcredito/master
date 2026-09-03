@@ -1,0 +1,11 @@
+[build]
+builder = "NIXPACKS"
+buildCommand = "corepack enable && pnpm install --no-frozen-lockfile && pnpm prisma generate && pnpm build"
+
+[deploy]
+startCommand = "pnpm start"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+
+# Production migrations are applied by the designated release/migration step only.
