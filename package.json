@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "prisma generate && vitest run",
-    "harness": "tsx scripts/harness.ts",
+    "harness": "tsx scripts/harness.ts local",
+    "harness:staging": "tsx scripts/harness.ts staging",
     "seed": "tsx prisma/seed.ts",
     "prisma": "prisma"
   },

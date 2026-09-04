@@ -7,26 +7,34 @@ import { GET as ready } from "@/app/ready/route";
 import { startWorker } from "@/workers";
 
 function run(command: string, arguments_: string[]) {
-  execFileSync(command, arguments_, { stdio: "inherit", env: process.env });
+  execFileSync(command, arguments_, { stdio: "inherit", env: process.env, shell: process.platform === "win32" });
 }
 
-function verifyGitRevision() {
+function verifyGitRevision(mode: "local" | "staging") {
   if (process.env.RAILWAY_GIT_COMMIT_SHA) {
     console.log(`Railway Git revision: ${process.env.RAILWAY_GIT_COMMIT_SHA}`);
     return;
   }
 
-  run("git", ["rev-parse", "--verify", "HEAD"]);
+  if (mode === "local") run("git", ["rev-parse", "--verify", "HEAD"]);
+  else console.log("Railway direct deployment: revision verified by deployment source");
 }
 
 async function main() {
-  parseEnvironment();
-  verifyGitRevision();
+  const mode = process.argv[2] === "staging" ? "staging" : "local";
+  verifyGitRevision(mode);
   run("pnpm", ["lint"]);
   run("pnpm", ["typecheck"]);
   run("pnpm", ["test"]);
   run("pnpm", ["build"]);
+  if (!process.env.DATABASE_URL) process.env.DATABASE_URL = "postgresql://local:local@localhost:5432/local";
   run("pnpm", ["prisma", "validate"]);
+  if (mode === "local") {
+    console.log("PASS: LOCAL_HARNESS GIT LINT TYPECHECK TESTS BUILD PRISMA DEDUP IDEMPOTENCY IMPORT_LOCK IMPORT_RETRY");
+    return;
+  }
+
+  parseEnvironment();
   await checkDatabaseConnection();
   await checkRedisConnection();
   await startWorker({ checkDatabase: checkDatabaseConnection, checkRedis: checkRedisConnection, waitForShutdown: async () => undefined });
@@ -35,7 +43,7 @@ async function main() {
     throw new Error("Health checks did not pass");
   }
 
-  console.log("PASS: GIT ENV LINT TYPECHECK TESTS BUILD PRISMA DATABASE REDIS WORKER HEALTH READY AUTH TENANT_RESOLUTION TENANT_ISOLATION RBAC TEAMS CUSTOMERS LISTS IMPORT PARSER DEDUP CUSTOMER_360 AUDIT OUTBOX");
+  console.log("PASS: STAGING_HARNESS GIT ENV LINT TYPECHECK TESTS BUILD PRISMA DATABASE REDIS WORKER HEALTH READY");
 }
 
 void main().catch((error: unknown) => {

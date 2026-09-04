@@ -174,6 +174,7 @@ model Tenant {
   customerTagAssignments CustomerTagAssignment[]
   customerSources        CustomerSource[]
   customerListMembers    CustomerListMember[]
+  importColumnMappings   ImportColumnMapping[]
 
   @@index([status])
 }
@@ -280,6 +281,7 @@ model AuditEvent {
   entityType  String
   entityId    String
   metadata    Json?
+  idempotencyKey String? @unique
   createdAt   DateTime @default(now())
   tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -301,6 +303,8 @@ model OutboxEvent {
   attempts      Int       @default(0)
   lastError     String?
   lockedAt      DateTime?
+  idempotencyKey String? @unique
+  processingAt  DateTime?
   tenant        Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
   @@index([processedAt])
@@ -318,6 +322,9 @@ model Customer {
   fullName             String
   status               CustomerStatus            @default(ACTIVE)
   relationshipState    RelationshipState         @default(NEVER_CONTACTED)
+  lastContactAt        DateTime?
+  lastInboundAt        DateTime?
+  lastOutboundAt       DateTime?
   archivedAt           DateTime?
   createdAt            DateTime                  @default(now())
   updatedAt            DateTime                  @updatedAt
@@ -417,6 +424,7 @@ model CustomerSource {
 
   @@index([tenantId, sourceType])
   @@index([customerId, tenantId])
+  @@unique([tenantId, customerId, sourceType, sourceId])
 }
 
 model CustomerList {
@@ -465,6 +473,17 @@ model Import {
   processedRows  Int                   @default(0)
   errorRows      Int                   @default(0)
   idempotencyKey String?
+  lockedAt       DateTime?
+  lockOwner      String?
+  heartbeatAt    DateTime?
+  attempts       Int                   @default(0)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  enqueuedAt     DateTime?
+  processingMs   Int?
+  queueWaitMs    Int?
+  lastError      String?
+  metrics        Json?
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
   tenant         Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -494,14 +513,19 @@ model ImportFile {
 
 model ImportColumnMapping {
   id           String  @id @default(cuid())
+  tenantId     String
   importId     String
   sourceColumn String
   targetField  String
   confidence   Int     @default(0)
   confirmed    Boolean @default(false)
+  status       String  @default("SUGGESTED")
+  config       Json?
+  tenant       Tenant  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   import       Import  @relation(fields: [importId], references: [id], onDelete: Cascade)
 
   @@unique([importId, sourceColumn])
+  @@index([tenantId, importId])
 }
 
 model ImportRow {
@@ -515,6 +539,8 @@ model ImportRow {
   matchLevel   MatchLevel?
   errorMessage String?
   processedAt  DateTime?
+  attempts     Int          @default(0)
+  nextAttemptAt DateTime?
   import       Import          @relation(fields: [importId], references: [id], onDelete: Cascade)
   tenant       Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   customer     Customer?       @relation(fields: [customerId, tenantId], references: [id, tenantId], onDelete: Restrict)

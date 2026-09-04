@@ -4,9 +4,10 @@ import { logger } from "@/lib/logger";
 type OutboxDatabase = Pick<typeof db, "outboxEvent">;
 
 export async function processOutboxBatch(limit = 25, database: OutboxDatabase = db) {
-  const events = await database.outboxEvent.findMany({ where: { processedAt: null, lockedAt: null }, orderBy: { createdAt: "asc" }, take: limit });
+  const staleLock = new Date(Date.now() - Number(process.env.OUTBOX_STALE_TIMEOUT_MS ?? 300_000));
+  const events = await database.outboxEvent.findMany({ where: { processedAt: null, OR: [{ lockedAt: null }, { lockedAt: { lt: staleLock } }] }, orderBy: { createdAt: "asc" }, take: limit });
   for (const event of events) {
-    const locked = await database.outboxEvent.updateMany({ where: { id: event.id, processedAt: null, lockedAt: null }, data: { lockedAt: new Date(), attempts: { increment: 1 } } });
+    const locked = await database.outboxEvent.updateMany({ where: { id: event.id, processedAt: null, OR: [{ lockedAt: null }, { lockedAt: { lt: staleLock } }] }, data: { lockedAt: new Date(), processingAt: new Date(), attempts: { increment: 1 } } });
     if (locked.count !== 1) continue;
     try {
       await database.outboxEvent.update({ where: { id: event.id }, data: { processedAt: new Date(), lockedAt: null, lastError: null } });

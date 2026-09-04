@@ -56,19 +56,25 @@ export function normalizeBoolean(value: unknown) {
 }
 
 const mappingAliases: Record<string, string[]> = {
-  fullName: ["nome", "cliente", "nome cliente", "name"],
-  phone: ["telefone", "celular", "whatsapp", "phone"],
-  cpf: ["cpf"],
+  fullName: ["nome", "cliente", "nome cliente", "name", "cliente"],
+  phone: ["telefone", "celular", "whatsapp", "phone", "celular principal"],
+  cpf: ["cpf", "documento"],
   email: ["email", "e-mail"],
-  birth_date: ["data nascimento", "data nasc", "nascimento", "dt nasc", "birth date"],
-  current_consignado_amount: ["consignado atual"],
-  available_amount: ["valor liberado", "valor disponível", "valor disponivel"],
-  available_margin: ["margem disponível", "margem disponivel"],
-  bank: ["banco"],
+  birth_date: ["data nascimento", "data nasc", "nascimento", "dt nasc", "birth date", "dt nasc"],
+  current_consignado_amount: ["consignado atual", "saldo consignado"],
+  available_amount: ["valor liberado", "valor disponível", "valor disponivel", "vl lib"],
+  available_margin: ["margem disponível", "margem disponivel", "margem livre"],
+  bank: ["banco", "instituição financeira", "instituicao financeira"],
   benefit_number: ["número benefício", "numero beneficio", "benefit number"],
   agreement_type: ["convênio", "convenio"],
   income: ["renda", "income"],
 };
+
+export const supportedMappingFields = new Set([
+  "fullName", "phone", "cpf", "email", "externalId", "birth_date",
+  "current_consignado_amount", "available_amount", "available_margin", "bank",
+  "benefit_number", "agreement_type", "income", "ignore",
+]);
 
 export function suggestMapping(headers: string[]) {
   return Object.fromEntries(headers.map((header) => {
@@ -76,6 +82,16 @@ export function suggestMapping(headers: string[]) {
     const target = Object.entries(mappingAliases).find(([, aliases]) => aliases.some((alias) => alias.normalize("NFD").replace(/[\u0300-\u036f]/g, "") === normalized))?.[0] ?? null;
     return [header, target];
   }));
+}
+
+export function applyColumnMapping(row: Record<string, unknown>, mapping: Record<string, string>) {
+  const mapped: Record<string, unknown> = {};
+  for (const [sourceColumn, value] of Object.entries(row)) {
+    const target = mapping[sourceColumn];
+    if (target === "ignore") continue;
+    mapped[target || sourceColumn] = value;
+  }
+  return mapped;
 }
 
 export type NormalizedCustomerRow = {
