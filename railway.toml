@@ -2,12 +2,7 @@
 builder = "RAILPACK"
 buildCommand = "corepack enable && pnpm install --frozen-lockfile && pnpm build"
 
-[deploy]
-startCommand = "pnpm start"
-healthcheckPath = "/health"
-healthcheckTimeout = 30
-restartPolicyType = "ON_FAILURE"
+# Deployment settings are service-specific in Railway: WEB owns health checks
+# and migrations; WORKER runs pnpm worker without an HTTP health check.
 
-# Production migrations are configured as the WEB service's pre-deploy command,
-# never by the WORKER. See docs/operations/deployment.md.
 
