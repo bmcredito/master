@@ -57,7 +57,6 @@ CREATE TABLE "CustomerIdentifier" (
     "normalizedValue" TEXT NOT NULL,
     "displayValue" TEXT,
     "verification" "VerificationStatus" NOT NULL DEFAULT 'IMPORTED',
-    "observedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -75,6 +74,7 @@ CREATE TABLE "CustomerFact" (
     "source" TEXT NOT NULL,
     "confidence" INTEGER,
     "verification" "VerificationStatus" NOT NULL DEFAULT 'IMPORTED',
+    "observedAt" TIMESTAMP(3),
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -123,7 +123,7 @@ CREATE TABLE "CustomerList" (
     "tenantId" TEXT NOT NULL,
     "name" TEXT NOT NULL,
     "description" TEXT,
-    "status" "CustomerListStatus" NOT NULL DEFAULT 'ACTIVE',
+    "status" "CustomerListStatus" NOT NULL DEFAULT 'DRAFT',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
@@ -405,10 +405,11 @@ ALTER TABLE "CustomerListMember" ADD CONSTRAINT "CustomerListMember_listId_tenan
 -- AddForeignKey
 ALTER TABLE "CustomerListMember" ADD CONSTRAINT "CustomerListMember_customerId_tenantId_fkey" FOREIGN KEY ("customerId", "tenantId") REFERENCES "Customer"("id", "tenantId") ON DELETE CASCADE ON UPDATE CASCADE;
 
-ALTER TABLE "CustomerListMember" ADD CONSTRAINT "CustomerListMember_importId_fkey" FOREIGN KEY ("importId") REFERENCES "Import"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-
 -- AddForeignKey
 ALTER TABLE "CustomerListMember" ADD CONSTRAINT "CustomerListMember_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "CustomerListMember" ADD CONSTRAINT "CustomerListMember_importId_fkey" FOREIGN KEY ("importId") REFERENCES "Import"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Import" ADD CONSTRAINT "Import_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
