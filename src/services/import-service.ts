@@ -55,8 +55,8 @@ export async function processImportBatch(batchSize = 100) {
                 tenantId: current.tenantId,
                 displayName: normalized.fullName,
                 fullName: normalized.fullName,
-                identifiers: { create: identifiers.map((identifier) => ({ tenantId: current.tenantId, type: identifier.type, normalizedValue: identifier.value, verification: "IMPORTED" })) },
-                facts: { create: Object.entries(normalized.facts).map(([key, value]) => ({ tenantId: current.tenantId, key, value, source: `IMPORT:${current.id}`, verification: "IMPORTED" })) },
+                identifiers: { create: identifiers.map((identifier) => ({ type: identifier.type, normalizedValue: identifier.value, verification: "IMPORTED" })) },
+                facts: { create: Object.entries(normalized.facts).map(([key, value]) => ({ key, value, source: `IMPORT:${current.id}`, verification: "IMPORTED" })) },
               },
             });
         if (match) for (const [key, value] of Object.entries(normalized.facts)) await transaction.customerFact.upsert({ where: { tenantId_customerId_key: { tenantId: current.tenantId, customerId: customer.id, key } }, create: { tenantId: current.tenantId, customerId: customer.id, key, value, source: `IMPORT:${current.id}`, verification: "IMPORTED" }, update: { value, source: `IMPORT:${current.id}`, verification: "IMPORTED" } });
