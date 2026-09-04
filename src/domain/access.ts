@@ -4,6 +4,9 @@ export const capabilities = [
   "tenant.read", "tenant.manage", "users.read", "users.create", "users.update",
   "users.disable", "users.manage_roles", "teams.read", "teams.create", "teams.update",
   "teams.archive", "teams.manage_members", "audit.read", "settings.read", "settings.update",
+  "customers.read", "customers.create", "customers.update", "customers.archive",
+  "lists.read", "lists.create", "lists.update", "lists.archive", "lists.import",
+  "tags.read", "tags.manage",
 ] as const;
 
 export type Capability = (typeof capabilities)[number];
@@ -11,7 +14,7 @@ export type Capability = (typeof capabilities)[number];
 export const roleCapabilities: Record<Role, readonly Capability[]> = {
   PLATFORM_ADMIN: [],
   TENANT_MASTER: capabilities,
-  TENANT_MANAGER: ["tenant.read", "users.read", "teams.read", "teams.manage_members", "settings.read"],
+  TENANT_MANAGER: ["tenant.read", "users.read", "teams.read", "teams.manage_members", "settings.read", "customers.read", "lists.read", "lists.create", "lists.update", "lists.import", "tags.read", "tags.manage"],
   CONSULTANT: [],
 };
 
