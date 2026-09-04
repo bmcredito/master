@@ -23,7 +23,7 @@ export class CustomerService {
   async create(context: AuthorizationContext, input: { fullName: string; identifiers?: Array<{ type: "PHONE" | "CPF" | "EMAIL" | "EXTERNAL_ID"; normalizedValue: string }> }) {
     requireCapability(context, "customers.create");
     return db.$transaction(async (transaction) => {
-      const customer = await transaction.customer.create({ data: { tenantId: context.tenantId, displayName: input.fullName, fullName: input.fullName, identifiers: input.identifiers ? { create: input.identifiers.map((identifier) => ({ ...identifier, tenantId: context.tenantId })) } : undefined } });
+      const customer = await transaction.customer.create({ data: { tenantId: context.tenantId, displayName: input.fullName, fullName: input.fullName, identifiers: input.identifiers ? { create: input.identifiers.map((identifier) => ({ ...identifier })) } : undefined } });
       await recordEvent(transaction, { tenantId: context.tenantId, actorUserId: context.userId, action: "CUSTOMER_CREATED", entityType: "Customer", entityId: customer.id });
       return customer;
     });
