@@ -281,6 +281,7 @@ model AuditEvent {
   entityType  String
   entityId    String
   metadata    Json?
+  idempotencyKey String? @unique
   createdAt   DateTime @default(now())
   tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
@@ -302,6 +303,8 @@ model OutboxEvent {
   attempts      Int       @default(0)
   lastError     String?
   lockedAt      DateTime?
+  idempotencyKey String? @unique
+  processingAt  DateTime?
   tenant        Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
   @@index([processedAt])
@@ -469,6 +472,17 @@ model Import {
   processedRows  Int                   @default(0)
   errorRows      Int                   @default(0)
   idempotencyKey String?
+  lockedAt       DateTime?
+  lockOwner      String?
+  heartbeatAt    DateTime?
+  attempts       Int                   @default(0)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  enqueuedAt     DateTime?
+  processingMs   Int?
+  queueWaitMs    Int?
+  lastError      String?
+  metrics        Json?
   createdAt      DateTime              @default(now())
   updatedAt      DateTime              @updatedAt
   tenant         Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -524,6 +538,8 @@ model ImportRow {
   matchLevel   MatchLevel?
   errorMessage String?
   processedAt  DateTime?
+  attempts     Int          @default(0)
+  nextAttemptAt DateTime?
   import       Import          @relation(fields: [importId], references: [id], onDelete: Cascade)
   tenant       Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   customer     Customer?       @relation(fields: [customerId, tenantId], references: [id, tenantId], onDelete: Restrict)
