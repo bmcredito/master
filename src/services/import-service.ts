@@ -125,9 +125,9 @@ export async function processImportBatch(batchSize = 100, workerId = process.env
         const candidates = identifiers.length ? await db.customerIdentifier.findMany({ where: { tenantId: candidate.tenantId, OR: identifiers.map((identifier) => ({ type: identifier.type, normalizedValue: identifier.value })) }, select: { customerId: true, type: true } }) : [];
         metrics.dedupLookupMs += Date.now() - dedupStarted;
         const priority = ["CPF", "PHONE", "EMAIL", "EXTERNAL_ID"] as const;
-        const matched = priority.map((type) => candidates.filter((item) => item.type === type)).find((items) => items.length > 0) ?? [];
-        const distinctCustomers = new Set(matched.map((item) => item.customerId));
+        const distinctCustomers = new Set(candidates.map((item) => item.customerId));
         if (distinctCustomers.size > 1) throw new Error("Ambiguous identifier match");
+        const matched = priority.map((type) => candidates.filter((item) => item.type === type)).find((items) => items.length > 0) ?? [];
         const match = matched[0] ? { customerId: matched[0].customerId, level: matched[0].type } : null;
         const transactionStarted = Date.now();
         await db.$transaction(async (transaction) => {
@@ -143,7 +143,7 @@ export async function processImportBatch(batchSize = 100, workerId = process.env
         const message = error instanceof Error ? error.message : "Import row failed";
         const retryable = isRetryable(error) && row.attempts + 1 < importMaxAttempts;
         if (retryable) metrics.retryCount += 1;
-        await db.$transaction(async (transaction) => { await transaction.importRow.update({ where: { id: row.id }, data: { status: retryable ? "PENDING" : "ERROR", attempts: { increment: 1 }, nextAttemptAt: retryable ? new Date(Date.now() + retryDelayMs(row.attempts + 1)) : null, errorMessage: message, processedAt: retryable ? null : new Date() } }); if (!retryable) await transaction.importError.create({ data: { importId: candidate.id, rowNumber: row.rowNumber, code: "INTERNAL_ERROR", message: message.slice(0, 500), details: { attempts: row.attempts + 1, deadLetter: true } } }); });
+        await db.$transaction(async (transaction) => { await transaction.importRow.update({ where: { id: row.id }, data: { status: retryable ? "PENDING" : "ERROR", attempts: { increment: 1 }, nextAttemptAt: retryable ? new Date(Date.now() + retryDelayMs(row.attempts + 1)) : null, errorMessage: message, processedAt: retryable ? null : new Date() } }); if (!retryable) await transaction.importError.create({ data: { importId: candidate.id, rowNumber: row.rowNumber, code: message === "Ambiguous identifier match" ? "AMBIGUOUS_MATCH" : "INTERNAL_ERROR", message: message.slice(0, 500), details: { attempts: row.attempts + 1, deadLetter: true } } }); });
       }
     }
     const memory = process.memoryUsage();
@@ -157,18 +157,19 @@ export async function processImportBatch(batchSize = 100, workerId = process.env
     const [pending, errors, processed] = await Promise.all([db.importRow.count({ where: { importId: candidate.id, status: "PENDING" } }), db.importRow.count({ where: { importId: candidate.id, status: "ERROR" } }), db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED" } })]);
     await db.import.updateMany({ where: { id: candidate.id, lockOwner: workerId }, data: { heartbeatAt: new Date(), processedRows: processed, errorRows: errors, metrics } });
     if (!pending) {
-      const [created, matchedPhone, matchedCpf, matchedEmail, matchedExternal] = await Promise.all([
+      const [created, matchedPhone, matchedCpf, matchedEmail, matchedExternal, conflicts] = await Promise.all([
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "NONE" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "PHONE" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "CPF" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "EMAIL" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "EXTERNAL_ID" } }),
+        db.importError.count({ where: { importId: candidate.id, code: "AMBIGUOUS_MATCH" } }),
       ]);
       const matched = matchedPhone + matchedCpf + matchedEmail + matchedExternal;
       const durationMs = Date.now() - metrics.startedAtMs;
       const sortedChunks = [...metrics.chunkDurationsMs].sort((left, right) => left - right);
-      const persistedMetrics = { ...metrics, durationMs, rowsPerSecond: Math.round((candidate.totalRows / Math.max(1, durationMs)) * 1000), chunkSize: batchSize, chunkCount: metrics.chunkDurationsMs.length, avgChunkDurationMs: Math.round(metrics.chunkDurationsMs.reduce((sum, value) => sum + value, 0) / metrics.chunkDurationsMs.length), maxChunkDurationMs: Math.max(...metrics.chunkDurationsMs), p95ChunkDurationMs: sortedChunks[Math.max(0, Math.ceil(sortedChunks.length * 0.95) - 1)], avgTransactionMs: processed ? Math.round(metrics.transactionMs / processed) : 0, createdCount: created, matchedPhone, matchedCpf, matchedEmail, matchedExternal, deadLetterCount: errors };
-      const completed = await db.import.update({ where: { id: candidate.id }, data: { status: errors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", processedRows: processed, errorRows: errors, completedAt: new Date(), processingMs: durationMs, queueWaitMs: runStartedAt.getTime() - candidate.createdAt.getTime(), metrics: persistedMetrics, summary: { upsert: { create: { createdCount: created, updatedCount: matched, matchedCount: matched, errorCount: errors }, update: { createdCount: created, updatedCount: matched, matchedCount: matched, errorCount: errors } } } } });
+      const persistedMetrics = { ...metrics, durationMs, rowsPerSecond: Math.round((candidate.totalRows / Math.max(1, durationMs)) * 1000), chunkSize: batchSize, chunkCount: metrics.chunkDurationsMs.length, avgChunkDurationMs: Math.round(metrics.chunkDurationsMs.reduce((sum, value) => sum + value, 0) / metrics.chunkDurationsMs.length), maxChunkDurationMs: Math.max(...metrics.chunkDurationsMs), p95ChunkDurationMs: sortedChunks[Math.max(0, Math.ceil(sortedChunks.length * 0.95) - 1)], avgTransactionMs: processed ? Math.round(metrics.transactionMs / processed) : 0, createdCount: created, matchedPhone, matchedCpf, matchedEmail, matchedExternal, conflictCount: conflicts, deadLetterCount: errors };
+      const completed = await db.import.update({ where: { id: candidate.id }, data: { status: errors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", processedRows: processed, errorRows: errors, completedAt: new Date(), processingMs: durationMs, queueWaitMs: runStartedAt.getTime() - candidate.createdAt.getTime(), metrics: persistedMetrics, summary: { upsert: { create: { createdCount: created, updatedCount: matched, matchedCount: matched, ambiguousCount: conflicts, errorCount: errors }, update: { createdCount: created, updatedCount: matched, matchedCount: matched, ambiguousCount: conflicts, errorCount: errors } } } } });
       await db.$transaction(async (transaction) => { await recordEvent(transaction, { tenantId: candidate.tenantId, action: "IMPORT_COMPLETED", entityType: "Import", entityId: candidate.id, metadata: { processedRows: completed.processedRows, errorRows: errors }, idempotencyKey: `import-complete:${candidate.id}` }); });
       if (candidate.listId) await db.customerList.update({ where: { id_tenantId: { id: candidate.listId, tenantId: candidate.tenantId } }, data: { status: errors ? "FAILED" : "READY" } });
     }
