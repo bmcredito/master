@@ -44,6 +44,8 @@ pnpm build
 pnpm harness
 ```
 
+`pnpm harness` is an infrastructure-aware release verification. It requires valid `DATABASE_URL`, `REDIS_URL` and `APP_URL`; run it in the Railway WEB service environment for production validation.
+
 ## Architecture
 
 See `docs/architecture/overview.md` and `docs/architecture/context.md`.
@@ -55,3 +57,6 @@ See `docs/architecture/overview.md` and `docs/architecture/context.md`.
 ## Environment
 
 Secrets are never committed. Railway supplies production environment variables. Future integrations such as OpenAI and Evolution API remain optional until their respective phases.
+
+Production uses Node 22 and `pnpm@11.19.0`. The WEB service owns `prisma migrate deploy`; the WORKER never runs migrations.
+

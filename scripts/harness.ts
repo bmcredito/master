@@ -1,0 +1,36 @@
+import { execFileSync } from "node:child_process";
+import { checkDatabaseConnection } from "@/lib/db";
+import { parseEnvironment } from "@/lib/env";
+import { checkRedisConnection } from "@/lib/redis";
+import { GET as health } from "@/app/health/route";
+import { GET as ready } from "@/app/ready/route";
+import { startWorker } from "@/workers";
+
+function run(command: string, arguments_: string[]) {
+  execFileSync(command, arguments_, { stdio: "inherit", env: process.env });
+}
+
+async function main() {
+  parseEnvironment();
+  run("git", ["rev-parse", "--verify", "HEAD"]);
+  run("pnpm", ["lint"]);
+  run("pnpm", ["typecheck"]);
+  run("pnpm", ["test"]);
+  run("pnpm", ["build"]);
+  run("pnpm", ["prisma", "validate"]);
+  await checkDatabaseConnection();
+  await checkRedisConnection();
+  await startWorker({ checkDatabase: checkDatabaseConnection, checkRedis: checkRedisConnection, waitForShutdown: async () => undefined });
+
+  if ((await health()).status !== 200 || (await ready()).status !== 200) {
+    throw new Error("Health checks did not pass");
+  }
+
+  console.log("PASS: GIT ENV LINT TYPECHECK TESTS BUILD PRISMA DATABASE REDIS WORKER HEALTH READY");
+}
+
+void main().catch((error: unknown) => {
+  console.error(error);
+  process.exit(1);
+});
+
