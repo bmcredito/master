@@ -1,0 +1,3 @@
+import { db } from "@/lib/db";
+import { resolveAuthorizationContext, requireCapability } from "@/lib/auth/context";
+export default async function SettingsPage() { const context = await resolveAuthorizationContext(); requireCapability(context, "settings.read"); const tenant = await db.tenant.findUniqueOrThrow({ where: { id: context.tenantId } }); return <><h1>Configurações</h1><section className="card"><p><strong>{tenant.name}</strong></p><p>Slug: {tenant.slug}</p><p>Status: {tenant.status}</p></section></>; }

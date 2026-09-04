@@ -7,62 +7,185 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum TenantStatus {
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+  DISABLED
+}
+
+enum MembershipStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum Role {
+  PLATFORM_ADMIN
+  TENANT_MASTER
+  TENANT_MANAGER
+  CONSULTANT
+}
+
+enum AccessScope {
+  TENANT
+  TEAM
+  ASSIGNED
+}
+
+enum TeamStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 model Tenant {
-  id           String       @id @default(cuid())
+  id           String        @id @default(cuid())
   name         String
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  slug         String        @unique
+  status       TenantStatus  @default(ACTIVE)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
   memberships  Membership[]
+  teams        Team[]
+  teamMembers  TeamMember[]
   auditEvents  AuditEvent[]
   outboxEvents OutboxEvent[]
+  invites      InviteToken[]
+
+  @@index([status])
 }
 
 model User {
-  id          String       @id @default(cuid())
-  email       String       @unique
-  name        String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  memberships Membership[]
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String
+  passwordHash String?
+  status       UserStatus    @default(INVITED)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  memberships  Membership[]
+  teamMembers  TeamMember[]
+  sessions     Session[]
+  invites      InviteToken[]
+  auditEvents  AuditEvent[]  @relation("AuditActor")
 }
 
 model Membership {
-  id        String   @id @default(cuid())
+  id        String           @id @default(cuid())
   tenantId  String
   userId    String
-  role      String
-  createdAt DateTime @default(now())
-  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role
+  status    MembershipStatus @default(INVITED)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user      User             @relation(fields: [userId], references: [id], onDelete: Restrict)
 
-  @@unique([tenantId, userId])
+  @@unique([userId, tenantId])
+  @@index([tenantId])
+  @@index([tenantId, role])
+}
+
+model Team {
+  id          String       @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  status      TeamStatus   @default(ACTIVE)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  members     TeamMember[]
+
+  @@unique([id, tenantId])
+  @@index([tenantId])
+  @@index([tenantId, status])
+}
+
+model TeamMember {
+  id        String   @id @default(cuid())
+  tenantId  String
+  teamId    String
+  userId    String
+  createdAt DateTime @default(now())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  team      Team     @relation(fields: [teamId, tenantId], references: [id, tenantId], onDelete: Restrict)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([teamId, userId])
+  @@index([teamId])
+  @@index([userId])
   @@index([tenantId])
 }
 
+model Session {
+  id         String   @id @default(cuid())
+  userId     String
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model InviteToken {
+  id        String    @id @default(cuid())
+  tenantId  String
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
 model AuditEvent {
-  id        String   @id @default(cuid())
-  tenantId  String?
-  event     String
-  actorId   String?
-  metadata  Json?
-  createdAt DateTime @default(now())
-  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id          String   @id @default(cuid())
+  tenantId    String?
+  actorUserId String?
+  action      String
+  entityType  String
+  entityId    String
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  tenant      Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  actor       User?    @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, createdAt])
+  @@index([actorUserId])
+  @@index([action])
 }
 
 model OutboxEvent {
-  id          String    @id @default(cuid())
-  tenantId    String?
-  type        String
-  aggregateId String?
-  payload     Json
-  occurredAt  DateTime  @default(now())
-  processedAt DateTime?
-  attempts    Int       @default(0)
-  tenant      Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  id            String    @id @default(cuid())
+  tenantId      String?
+  eventType     String
+  aggregateType String
+  aggregateId   String
+  payload       Json
+  createdAt     DateTime  @default(now())
+  processedAt   DateTime?
+  attempts      Int       @default(0)
+  lastError     String?
+  lockedAt      DateTime?
+  tenant        Tenant?   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
-  @@index([processedAt, occurredAt])
-  @@index([tenantId, occurredAt])
+  @@index([processedAt])
+  @@index([createdAt])
+  @@index([tenantId])
+  @@index([eventType])
 }
-

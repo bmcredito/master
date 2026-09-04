@@ -1,0 +1,4 @@
+"use client";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+export function LoginForm() { const router = useRouter(); const [error, setError] = useState(""); async function login(formData: FormData) { const response = await fetch("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(Object.fromEntries(formData)) }); if (response.ok) router.push("/app"); else setError("Credenciais inválidas"); } return <form className="form" action={login}><input name="email" type="email" placeholder="Email" required/><input name="password" type="password" placeholder="Senha" minLength={12} required/><button>Entrar</button>{error && <p className="error">{error}</p>}</form>; }
