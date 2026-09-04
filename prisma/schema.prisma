@@ -424,6 +424,7 @@ model CustomerSource {
 
   @@index([tenantId, sourceType])
   @@index([customerId, tenantId])
+  @@unique([tenantId, customerId, sourceType, sourceId])
 }
 
 model CustomerList {
