@@ -3,7 +3,8 @@ import type { MatchLevel } from "@prisma/client";
 import { requireCapability } from "@/lib/auth/context";
 import { db } from "@/lib/db";
 import { ConflictError, NotFoundError } from "@/domain/errors";
-import { normalizeCustomerRow } from "@/services/customer-import/normalization";
+import { applyColumnMapping, normalizeCustomerRow, suggestMapping } from "@/services/customer-import/normalization";
+import { validateColumnMapping, type MappingInput } from "@/services/customer-import/mapping";
 import { parseImportFile } from "@/services/customer-import/parser";
 import { recordEvent } from "@/services/events";
 
@@ -18,7 +19,7 @@ export async function createImport(context: AuthorizationContext, fileName: stri
   const parsed = parseImportFile(content, fileType, maxRows);
   if (listId && !await db.customerList.findFirst({ where: { id: listId, tenantId: context.tenantId, status: { not: "ARCHIVED" } } })) throw new NotFoundError();
   const created = await db.$transaction(async (transaction) => {
-    const createdImport = await transaction.import.create({ data: { tenantId: context.tenantId, createdById: context.userId, listId, name: fileName, fileType, status: "PREVIEWED", totalRows: parsed.rows.length, file: { create: { fileName, mimeType, sizeBytes: content.byteLength } }, rows: { create: parsed.rows.map((row, index) => ({ tenantId: context.tenantId, rowNumber: index + 2, rawData: row })) } } });
+    const createdImport = await transaction.import.create({ data: { tenantId: context.tenantId, createdById: context.userId, listId, name: fileName, fileType, status: "PREVIEWED", totalRows: parsed.rows.length, file: { create: { fileName, mimeType, sizeBytes: content.byteLength } }, rows: { create: parsed.rows.map((row, index) => ({ tenantId: context.tenantId, rowNumber: index + 2, rawData: row })) }, mappings: { create: Object.entries(suggestMapping(parsed.headers)).map(([sourceColumn, targetField]) => ({ tenantId: context.tenantId, sourceColumn, targetField: targetField ?? "ignore", confidence: targetField ? 100 : 0, status: targetField ? "SUGGESTED" : "UNMAPPED" })) } } });
     if (listId) await transaction.customerList.update({ where: { id_tenantId: { id: listId, tenantId: context.tenantId } }, data: { status: "IMPORTING" } });
     await recordEvent(transaction, { tenantId: context.tenantId, actorUserId: context.userId, action: "CUSTOMER_IMPORT_PREVIEWED", entityType: "Import", entityId: createdImport.id, metadata: { rows: parsed.rows.length, fileType } });
     return createdImport;
@@ -28,18 +29,48 @@ export async function createImport(context: AuthorizationContext, fileName: stri
 
 export async function startImport(context: AuthorizationContext, importId: string) {
   requireCapability(context, "lists.import");
-  const result = await db.import.updateMany({ where: { id: importId, tenantId: context.tenantId, status: "PREVIEWED" }, data: { status: "PROCESSING" } });
-  if (!result.count) throw new NotFoundError();
-  return db.import.findUniqueOrThrow({ where: { id: importId } });
+  const item = await db.import.findFirst({ where: { id: importId, tenantId: context.tenantId, status: "PREVIEWED" }, include: { mappings: true } });
+  if (!item) throw new NotFoundError();
+  if (!item.mappings.length || item.mappings.some((mapping) => !mapping.confirmed)) throw new ConflictError("Confirm the column mapping before starting the import");
+  const result = await db.$transaction(async (transaction) => {
+    const updated = await transaction.import.updateMany({ where: { id: importId, tenantId: context.tenantId, status: "PREVIEWED" }, data: { status: "PROCESSING" } });
+    if (!updated.count) throw new ConflictError("Import is no longer ready to start");
+    await recordEvent(transaction, { tenantId: context.tenantId, actorUserId: context.userId, action: "IMPORT_STARTED", entityType: "Import", entityId: importId });
+    return transaction.import.findUniqueOrThrow({ where: { id: importId } });
+  });
+  return result;
+}
+
+export async function getImport(context: AuthorizationContext, importId: string) {
+  requireCapability(context, "lists.read");
+  const item = await db.import.findFirst({ where: { id: importId, tenantId: context.tenantId }, include: { mappings: true, summary: true, errors: true } });
+  if (!item) throw new NotFoundError();
+  return item;
+}
+
+export async function saveImportMapping(context: AuthorizationContext, importId: string, input: MappingInput) {
+  requireCapability(context, "lists.import");
+  const item = await db.import.findFirst({ where: { id: importId, tenantId: context.tenantId, status: "PREVIEWED" }, include: { rows: { take: 1, orderBy: { rowNumber: "asc" } }, mappings: true } });
+  if (!item) throw new NotFoundError();
+  const headers = item.rows[0] ? Object.keys(item.rows[0].rawData as Record<string, unknown>) : item.mappings.map((mapping) => mapping.sourceColumn);
+  validateColumnMapping(input, headers);
+  return db.$transaction(async (transaction) => {
+    await transaction.importColumnMapping.deleteMany({ where: { importId, tenantId: context.tenantId } });
+    await transaction.importColumnMapping.createMany({ data: Object.entries(input).map(([sourceColumn, targetField]) => ({ tenantId: context.tenantId, importId, sourceColumn, targetField: targetField ?? "ignore", confirmed: true, status: !targetField || targetField === "ignore" ? "IGNORED" : "CONFIRMED" })) });
+    await recordEvent(transaction, { tenantId: context.tenantId, actorUserId: context.userId, action: "IMPORT_MAPPING_CONFIRMED", entityType: "Import", entityId: importId, metadata: { columns: Object.keys(input).length } });
+    return transaction.import.findUniqueOrThrow({ where: { id: importId }, include: { mappings: true } });
+  });
 }
 
 export async function processImportBatch(batchSize = 100) {
   const current = await db.import.findFirst({ where: { status: "PROCESSING" }, orderBy: { createdAt: "asc" } });
   if (!current) return 0;
+  const mappings = await db.importColumnMapping.findMany({ where: { importId: current.id, tenantId: current.tenantId, confirmed: true } });
+  const mapping = Object.fromEntries(mappings.map((item) => [item.sourceColumn, item.targetField]));
   const rows = await db.importRow.findMany({ where: { importId: current.id, status: "PENDING" }, orderBy: { rowNumber: "asc" }, take: batchSize });
   for (const row of rows) {
     try {
-      const normalized = normalizeCustomerRow(row.rawData as Record<string, unknown>);
+      const normalized = normalizeCustomerRow(applyColumnMapping(row.rawData as Record<string, unknown>, mapping));
       const identifiers = (["cpf", "phone", "email", "externalId"] as const).flatMap((key) => normalized[key] ? [{ type: key === "externalId" ? "EXTERNAL_ID" as const : key === "phone" ? "PHONE" as const : key === "cpf" ? "CPF" as const : "EMAIL" as const, value: normalized[key] as string }] : []);
       const candidates = identifiers.length ? await db.customerIdentifier.findMany({ where: { tenantId: current.tenantId, OR: identifiers.map((identifier) => ({ type: identifier.type, normalizedValue: identifier.value })) }, select: { customerId: true, type: true, normalizedValue: true } }) : [];
       const priority = ["CPF", "PHONE", "EMAIL", "EXTERNAL_ID"] as const;
@@ -57,6 +88,7 @@ export async function processImportBatch(batchSize = 100) {
                 fullName: normalized.fullName,
                 identifiers: { create: identifiers.map((identifier) => ({ type: identifier.type, normalizedValue: identifier.value, verification: "IMPORTED" })) },
                 facts: { create: Object.entries(normalized.facts).map(([key, value]) => ({ key, value, source: `IMPORT:${current.id}`, verification: "IMPORTED" })) },
+                sources: { create: { sourceType: "IMPORT", sourceId: current.id, metadata: { rowNumber: row.rowNumber } } },
               },
             });
         if (match) for (const [key, value] of Object.entries(normalized.facts)) await transaction.customerFact.upsert({ where: { tenantId_customerId_key: { tenantId: current.tenantId, customerId: customer.id, key } }, create: { tenantId: current.tenantId, customerId: customer.id, key, value, source: `IMPORT:${current.id}`, verification: "IMPORTED" }, update: { value, source: `IMPORT:${current.id}`, verification: "IMPORTED" } });
@@ -69,6 +101,6 @@ export async function processImportBatch(batchSize = 100) {
     }
   }
   const pending = await db.importRow.count({ where: { importId: current.id, status: "PENDING" } });
-  if (!pending) { const errors = await db.importRow.count({ where: { importId: current.id, status: "ERROR" } }); await db.import.update({ where: { id: current.id }, data: { status: errors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", processedRows: current.totalRows - errors, errorRows: errors, summary: { upsert: { create: { createdCount: current.totalRows - errors, errorCount: errors }, update: { errorCount: errors } } } } }); if (current.listId) await db.customerList.update({ where: { id_tenantId: { id: current.listId, tenantId: current.tenantId } }, data: { status: errors ? "FAILED" : "READY" } }); }
+  if (!pending) { const errors = await db.importRow.count({ where: { importId: current.id, status: "ERROR" } }); const completed = await db.import.update({ where: { id: current.id }, data: { status: errors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", processedRows: current.totalRows - errors, errorRows: errors, summary: { upsert: { create: { createdCount: current.totalRows - errors, errorCount: errors }, update: { errorCount: errors } } } } }); await db.$transaction(async (transaction) => { await recordEvent(transaction, { tenantId: current.tenantId, action: "IMPORT_COMPLETED", entityType: "Import", entityId: current.id, metadata: { processedRows: completed.processedRows, errorRows: errors } }); }); if (current.listId) await db.customerList.update({ where: { id_tenantId: { id: current.listId, tenantId: current.tenantId } }, data: { status: errors ? "FAILED" : "READY" } }); }
   return rows.length;
 }
