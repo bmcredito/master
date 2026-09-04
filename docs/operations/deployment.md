@@ -4,7 +4,7 @@
 
 WEB runs `pnpm start` and uses `/health` for liveness. WORKER runs `pnpm worker` and remains alive while waiting for jobs.
 
-The committed `railway.toml` defines only shared build settings. Start commands, health checks and pre-deploy commands are service-specific Railway settings so one service cannot override the other.
+Railpack detects the committed `package.json` and lockfile directly. Start commands, health checks and pre-deploy commands remain service-specific Railway settings so one service cannot override the other; the repository intentionally has no shared Railway deploy config file.
 
 ## Migrations
 
@@ -19,5 +19,6 @@ Railway is the deployment target. PostgreSQL and Redis are managed services. `AP
 `NODE_ENV`, `DATABASE_URL`, `REDIS_URL`, `APP_URL`.
 
 Future provider secrets remain optional until their implementation phases. Each release requires terminal Railway deployment status `SUCCESS`, `/health` and `/ready` returning 200, healthy worker startup logs and `prisma migrate status` from the WEB service environment.
+
 
 

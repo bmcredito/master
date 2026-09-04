@@ -1,8 +1,0 @@
-[build]
-builder = "RAILPACK"
-buildCommand = "corepack enable && pnpm install --frozen-lockfile && pnpm build"
-
-# Deployment settings are service-specific in Railway: WEB owns health checks
-# and migrations; WORKER runs pnpm worker without an HTTP health check.
-
-
