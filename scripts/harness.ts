@@ -10,18 +10,19 @@ function run(command: string, arguments_: string[]) {
   execFileSync(command, arguments_, { stdio: "inherit", env: process.env, shell: process.platform === "win32" });
 }
 
-function verifyGitRevision() {
+function verifyGitRevision(mode: "local" | "staging") {
   if (process.env.RAILWAY_GIT_COMMIT_SHA) {
     console.log(`Railway Git revision: ${process.env.RAILWAY_GIT_COMMIT_SHA}`);
     return;
   }
 
-  run("git", ["rev-parse", "--verify", "HEAD"]);
+  if (mode === "local") run("git", ["rev-parse", "--verify", "HEAD"]);
+  else console.log("Railway direct deployment: revision verified by deployment source");
 }
 
 async function main() {
   const mode = process.argv[2] === "staging" ? "staging" : "local";
-  verifyGitRevision();
+  verifyGitRevision(mode);
   run("pnpm", ["lint"]);
   run("pnpm", ["typecheck"]);
   run("pnpm", ["test"]);
