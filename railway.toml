@@ -1,6 +1,6 @@
 [build]
-builder = "NIXPACKS"
-buildCommand = "corepack enable && pnpm install --no-frozen-lockfile && pnpm prisma generate && pnpm build"
+builder = "RAILPACK"
+buildCommand = "corepack enable && pnpm install --frozen-lockfile && pnpm build"
 
 [deploy]
 startCommand = "pnpm start"
@@ -8,4 +8,6 @@ healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
 
-# Production migrations are applied by the designated release/migration step only.
+# Production migrations are configured as the WEB service's pre-deploy command,
+# never by the WORKER. See docs/operations/deployment.md.
+
