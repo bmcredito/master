@@ -1,0 +1,1 @@
+export default function ImportsPage() { return <><h1>Importar clientes</h1><section className="card"><p>Envie um arquivo CSV ou XLSX para visualizar colunas, revisar o mapeamento e confirmar o processamento.</p><p>O processamento é assíncrono e preserva a identidade do cliente e o rastreamento de cada linha.</p></section></> }

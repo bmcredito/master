@@ -1,0 +1,3 @@
+import { resolveAuthorizationContext, requireCapability } from "@/lib/auth/context";
+import { db } from "@/lib/db";
+export default async function ListsPage() { const context = await resolveAuthorizationContext(); requireCapability(context, "lists.read"); const lists = await db.customerList.findMany({ where: { tenantId: context.tenantId }, include: { _count: { select: { members: true } } }, orderBy: { createdAt: "desc" } }); return <><h1>Listas</h1><section className="card"><table><thead><tr><th>Nome</th><th>Status</th><th>Clientes</th></tr></thead><tbody>{lists.map((list) => <tr key={list.id}><td>{list.name}</td><td>{list.status}</td><td>{list._count.members}</td></tr>)}</tbody></table></section></> }

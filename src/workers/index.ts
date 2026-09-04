@@ -2,6 +2,7 @@ import { checkDatabaseConnection } from "@/lib/db";
 import { checkRedisConnection } from "@/lib/redis";
 import { logger } from "@/lib/logger";
 import { processOutboxBatch } from "@/services/outbox-service";
+import { processImportBatch } from "@/services/import-service";
 
 export type WorkerDependencies = {
   checkDatabase: () => Promise<void>;
@@ -12,6 +13,7 @@ export type WorkerDependencies = {
 async function waitForShutdown() {
   for (;;) {
     await processOutboxBatch();
+    await processImportBatch();
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
