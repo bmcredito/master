@@ -10,9 +10,18 @@ function run(command: string, arguments_: string[]) {
   execFileSync(command, arguments_, { stdio: "inherit", env: process.env });
 }
 
+function verifyGitRevision() {
+  if (process.env.RAILWAY_GIT_COMMIT_SHA) {
+    console.log(`Railway Git revision: ${process.env.RAILWAY_GIT_COMMIT_SHA}`);
+    return;
+  }
+
+  run("git", ["rev-parse", "--verify", "HEAD"]);
+}
+
 async function main() {
   parseEnvironment();
-  run("git", ["rev-parse", "--verify", "HEAD"]);
+  verifyGitRevision();
   run("pnpm", ["lint"]);
   run("pnpm", ["typecheck"]);
   run("pnpm", ["test"]);
@@ -33,4 +42,3 @@ void main().catch((error: unknown) => {
   console.error(error);
   process.exit(1);
 });
-
