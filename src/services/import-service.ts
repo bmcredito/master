@@ -8,6 +8,7 @@ import { validateColumnMapping, type MappingInput } from "@/services/customer-im
 import { parseImportFile } from "@/services/customer-import/parser";
 import { recordEvent } from "@/services/events";
 import { importMaxAttempts, importStaleTimeoutMs, isRetryable, retryDelayMs } from "@/services/import-policy";
+import { assertTestHooksAllowed } from "@/services/test-hooks";
 
 const maxBytes = Number(process.env.IMPORT_MAX_FILE_BYTES ?? 10 * 1024 * 1024);
 const maxRows = Number(process.env.IMPORT_MAX_ROWS ?? 10000);
@@ -25,8 +26,28 @@ type ImportRuntimeMetrics = {
   dedupLookupMs: number;
   transactionMs: number;
   retryCount: number;
+  dataChunks: number;
+  retryChunks: number;
+  reprocessedChunks: number;
+  otherChunks: number;
   workerIds: string[];
 };
+
+export type ImportTestHooks = {
+  importId?: string;
+  afterClaim?: (context: { importId: string; tenantId: string; workerId: string }) => Promise<void>;
+  beforeRow?: (context: { importId: string; rowId: string; rowNumber: number; attempt: number; workerId: string }) => Promise<void>;
+};
+
+function importErrorCode(message: string) {
+  if (message === "Ambiguous identifier match") return "AMBIGUOUS_MATCH" as const;
+  if (/name.*required|missing.*name/i.test(message)) return "MISSING_NAME" as const;
+  if (/phone/i.test(message)) return "INVALID_PHONE" as const;
+  if (/cpf/i.test(message)) return "INVALID_CPF" as const;
+  if (/formula/i.test(message)) return "FORMULA_INJECTION" as const;
+  if (/invalid|mapping/i.test(message)) return "INVALID_VALUE" as const;
+  return "INTERNAL_ERROR" as const;
+}
 
 function runtimeMetrics(value: unknown, startedAtMs: number, workerId: string): ImportRuntimeMetrics {
   const memory = process.memoryUsage();
@@ -44,6 +65,10 @@ function runtimeMetrics(value: unknown, startedAtMs: number, workerId: string): 
     dedupLookupMs: stored.dedupLookupMs ?? 0,
     transactionMs: stored.transactionMs ?? 0,
     retryCount: stored.retryCount ?? 0,
+    dataChunks: stored.dataChunks ?? 0,
+    retryChunks: stored.retryChunks ?? 0,
+    reprocessedChunks: stored.reprocessedChunks ?? 0,
+    otherChunks: stored.otherChunks ?? 0,
     workerIds: Array.from(new Set([...(stored.workerIds ?? []), workerId])),
   };
 }
@@ -99,14 +124,15 @@ export async function saveImportMapping(context: AuthorizationContext, importId:
   });
 }
 
-export async function recoverStaleImports(now = new Date()) {
+export async function recoverStaleImports(now = new Date(), tenantId?: string) {
   const cutoff = new Date(now.getTime() - importStaleTimeoutMs);
-  return (await db.import.updateMany({ where: { status: "PROCESSING", heartbeatAt: { lt: cutoff } }, data: { lockOwner: null, lockedAt: null, heartbeatAt: null, lastError: "Recovered stale import lock" } })).count;
+  return (await db.import.updateMany({ where: { tenantId, status: "PROCESSING", lockOwner: { not: null }, OR: [{ heartbeatAt: { lt: cutoff } }, { heartbeatAt: null, lockedAt: { lt: cutoff } }] }, data: { lockOwner: null, lockedAt: null, heartbeatAt: null, attempts: { increment: 1 }, lastError: "Recovered stale import lock" } })).count;
 }
 
-export async function processImportBatch(batchSize = 100, workerId = process.env.WORKER_ID ?? `worker-${process.pid}`) {
+export async function processImportBatch(batchSize = 100, workerId = process.env.WORKER_ID ?? `worker-${process.pid}`, hooks?: ImportTestHooks) {
+  assertTestHooksAllowed(Boolean(hooks));
   await recoverStaleImports();
-  const candidate = await db.import.findFirst({ where: { status: "PROCESSING", lockOwner: null }, orderBy: { createdAt: "asc" } });
+  const candidate = await db.import.findFirst({ where: { id: hooks?.importId, status: "PROCESSING", lockOwner: null }, orderBy: { createdAt: "asc" } });
   if (!candidate) return 0;
   const runStartedAt = candidate.startedAt ?? new Date();
   const claimed = await db.import.updateMany({ where: { id: candidate.id, status: "PROCESSING", lockOwner: null }, data: { lockOwner: workerId, lockedAt: new Date(), heartbeatAt: new Date(), startedAt: runStartedAt, enqueuedAt: candidate.enqueuedAt ?? candidate.createdAt } });
@@ -114,11 +140,17 @@ export async function processImportBatch(batchSize = 100, workerId = process.env
   const started = Date.now();
   const metrics = runtimeMetrics(candidate.metrics, runStartedAt.getTime(), workerId);
   try {
+    await hooks?.afterClaim?.({ importId: candidate.id, tenantId: candidate.tenantId, workerId });
     const mappings = await db.importColumnMapping.findMany({ where: { importId: candidate.id, tenantId: candidate.tenantId, confirmed: true } });
     const mapping = Object.fromEntries(mappings.map((item) => [item.sourceColumn, item.targetField]));
     const rows = await db.importRow.findMany({ where: { importId: candidate.id, status: "PENDING", OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }] }, orderBy: { rowNumber: "asc" }, take: batchSize });
+    if (!rows.length) metrics.otherChunks += 1;
+    else if (rows.every((row) => row.attempts === 0)) metrics.dataChunks += 1;
+    else if (rows.every((row) => row.attempts > 0)) metrics.retryChunks += 1;
+    else metrics.reprocessedChunks += 1;
     for (const row of rows) {
       try {
+        await hooks?.beforeRow?.({ importId: candidate.id, rowId: row.id, rowNumber: row.rowNumber, attempt: row.attempts + 1, workerId });
         const normalized = normalizeCustomerRow(applyColumnMapping(row.rawData as Record<string, unknown>, mapping));
         const identifiers = (["cpf", "phone", "email", "externalId"] as const).flatMap((key) => normalized[key] ? [{ type: key === "externalId" ? "EXTERNAL_ID" as const : key === "phone" ? "PHONE" as const : key === "cpf" ? "CPF" as const : "EMAIL" as const, value: normalized[key] as string }] : []);
         const dedupStarted = Date.now();
@@ -143,7 +175,7 @@ export async function processImportBatch(batchSize = 100, workerId = process.env
         const message = error instanceof Error ? error.message : "Import row failed";
         const retryable = isRetryable(error) && row.attempts + 1 < importMaxAttempts;
         if (retryable) metrics.retryCount += 1;
-        await db.$transaction(async (transaction) => { await transaction.importRow.update({ where: { id: row.id }, data: { status: retryable ? "PENDING" : "ERROR", attempts: { increment: 1 }, nextAttemptAt: retryable ? new Date(Date.now() + retryDelayMs(row.attempts + 1)) : null, errorMessage: message, processedAt: retryable ? null : new Date() } }); if (!retryable) await transaction.importError.create({ data: { importId: candidate.id, rowNumber: row.rowNumber, code: message === "Ambiguous identifier match" ? "AMBIGUOUS_MATCH" : "INTERNAL_ERROR", message: message.slice(0, 500), details: { attempts: row.attempts + 1, deadLetter: true } } }); });
+        await db.$transaction(async (transaction) => { await transaction.importRow.update({ where: { id: row.id }, data: { status: retryable ? "PENDING" : "ERROR", attempts: { increment: 1 }, nextAttemptAt: retryable ? new Date(Date.now() + retryDelayMs(row.attempts + 1)) : null, errorMessage: message, processedAt: retryable ? null : new Date() } }); if (!retryable) await transaction.importError.create({ data: { importId: candidate.id, rowNumber: row.rowNumber, code: importErrorCode(message), message: message.slice(0, 500), details: { attempts: row.attempts + 1, deadLetter: true } } }); });
       }
     }
     const memory = process.memoryUsage();
@@ -157,18 +189,26 @@ export async function processImportBatch(batchSize = 100, workerId = process.env
     const [pending, errors, processed] = await Promise.all([db.importRow.count({ where: { importId: candidate.id, status: "PENDING" } }), db.importRow.count({ where: { importId: candidate.id, status: "ERROR" } }), db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED" } })]);
     await db.import.updateMany({ where: { id: candidate.id, lockOwner: workerId }, data: { heartbeatAt: new Date(), processedRows: processed, errorRows: errors, metrics } });
     if (!pending) {
-      const [created, matchedPhone, matchedCpf, matchedEmail, matchedExternal, conflicts] = await Promise.all([
+      const [created, matchedPhone, matchedCpf, matchedEmail, matchedExternal, terminalErrors] = await Promise.all([
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "NONE" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "PHONE" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "CPF" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "EMAIL" } }),
         db.importRow.count({ where: { importId: candidate.id, status: "PROCESSED", matchLevel: "EXTERNAL_ID" } }),
-        db.importError.count({ where: { importId: candidate.id, code: "AMBIGUOUS_MATCH" } }),
+        db.importRow.findMany({ where: { importId: candidate.id, status: "ERROR" }, select: { errorMessage: true } }),
       ]);
       const matched = matchedPhone + matchedCpf + matchedEmail + matchedExternal;
       const durationMs = Date.now() - metrics.startedAtMs;
       const sortedChunks = [...metrics.chunkDurationsMs].sort((left, right) => left - right);
-      const persistedMetrics = { ...metrics, durationMs, rowsPerSecond: Math.round((candidate.totalRows / Math.max(1, durationMs)) * 1000), chunkSize: batchSize, chunkCount: metrics.chunkDurationsMs.length, avgChunkDurationMs: Math.round(metrics.chunkDurationsMs.reduce((sum, value) => sum + value, 0) / metrics.chunkDurationsMs.length), maxChunkDurationMs: Math.max(...metrics.chunkDurationsMs), p95ChunkDurationMs: sortedChunks[Math.max(0, Math.ceil(sortedChunks.length * 0.95) - 1)], avgTransactionMs: processed ? Math.round(metrics.transactionMs / processed) : 0, createdCount: created, matchedPhone, matchedCpf, matchedEmail, matchedExternal, conflictCount: conflicts, deadLetterCount: errors };
+      // Historical DLQ entries survive reprocessing; only current row states belong in totals.
+      const errorCodes = terminalErrors.map((row) => importErrorCode(row.errorMessage ?? "Import row failed"));
+      const conflicts = errorCodes.filter((code) => code === "AMBIGUOUS_MATCH").length;
+      const failed = errorCodes.filter((code) => code === "INTERNAL_ERROR").length;
+      const invalid = errorCodes.length - conflicts - failed;
+      const primaryOutcomes = { created, matched, duplicate: 0, invalid, conflict: conflicts, failed };
+      const reconciliation = Object.values(primaryOutcomes).reduce((sum, value) => sum + value, 0);
+      if (reconciliation !== candidate.totalRows) throw new Error(`Import outcome reconciliation failed: ${reconciliation}/${candidate.totalRows}`);
+      const persistedMetrics = { ...metrics, durationMs, rowsPerSecond: Math.round((candidate.totalRows / Math.max(1, durationMs)) * 1000), chunkSize: batchSize, chunkCount: metrics.dataChunks + metrics.retryChunks + metrics.reprocessedChunks + metrics.otherChunks, primaryOutcomes, reconciliation, avgChunkDurationMs: Math.round(metrics.chunkDurationsMs.reduce((sum, value) => sum + value, 0) / metrics.chunkDurationsMs.length), maxChunkDurationMs: Math.max(...metrics.chunkDurationsMs), p95ChunkDurationMs: sortedChunks[Math.max(0, Math.ceil(sortedChunks.length * 0.95) - 1)], avgTransactionMs: processed ? Math.round(metrics.transactionMs / processed) : 0, createdCount: created, matchedPhone, matchedCpf, matchedEmail, matchedExternal, conflictCount: conflicts, deadLetterCount: errors };
       const completed = await db.import.update({ where: { id: candidate.id }, data: { status: errors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", processedRows: processed, errorRows: errors, completedAt: new Date(), processingMs: durationMs, queueWaitMs: runStartedAt.getTime() - candidate.createdAt.getTime(), metrics: persistedMetrics, summary: { upsert: { create: { createdCount: created, updatedCount: matched, matchedCount: matched, ambiguousCount: conflicts, errorCount: errors }, update: { createdCount: created, updatedCount: matched, matchedCount: matched, ambiguousCount: conflicts, errorCount: errors } } } } });
       await db.$transaction(async (transaction) => { await recordEvent(transaction, { tenantId: candidate.tenantId, action: "IMPORT_COMPLETED", entityType: "Import", entityId: candidate.id, metadata: { processedRows: completed.processedRows, errorRows: errors }, idempotencyKey: `import-complete:${candidate.id}` }); });
       if (candidate.listId) await db.customerList.update({ where: { id_tenantId: { id: candidate.listId, tenantId: candidate.tenantId } }, data: { status: errors ? "FAILED" : "READY" } });
