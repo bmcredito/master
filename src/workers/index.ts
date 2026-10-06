@@ -3,6 +3,11 @@ import { checkRedisConnection } from "@/lib/redis";
 import { logger } from "@/lib/logger";
 import { processOutboxBatch } from "@/services/outbox-service";
 import { processImportBatch } from "@/services/import-service";
+import { processAIBatch } from "@/services/conversation-ai-service";
+import { processOutboundBatch } from "@/services/outbound-service";
+import { processMessagingReceiptBatch } from "@/services/messaging-receipt-service";
+import { processConnectionHealthBatch } from "@/services/messaging-health-service";
+import { processOutreachBatch } from "@/services/outreach-service";
 
 export type WorkerDependencies = {
   checkDatabase: () => Promise<void>;
@@ -12,8 +17,13 @@ export type WorkerDependencies = {
 
 async function waitForShutdown() {
   for (;;) {
+    await processMessagingReceiptBatch();
+    await processConnectionHealthBatch();
     await processOutboxBatch();
     await processImportBatch();
+    await processAIBatch();
+    await processOutreachBatch();
+    await processOutboundBatch();
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 }
